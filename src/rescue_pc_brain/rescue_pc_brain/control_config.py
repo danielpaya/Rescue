@@ -49,14 +49,15 @@ R2_PRESSED_VALUE = -1.0
 
 # La caja define el máximo de velocidad disponible.
 GEAR_LIMITS = {
-    1: 0.25,
-    2: 0.50,
-    3: 0.75,
-    4: 1.00,
+    1: 0.20,
+    2: 0.40,
+    3: 0.60,
+    4: 0.80,
+    5: 1.00,
 }
 
 MIN_GEAR = 1
-MAX_GEAR = 4
+MAX_GEAR = 5
 DEFAULT_GEAR = 1
 
 # =========================
@@ -94,3 +95,9 @@ REAL_SPEED_ZERO_THRESHOLD = 0.03
 
 MAX_LINEAR_SPEED = 1.0
 MAX_ANGULAR_SPEED = 1.0
+
+# =========================
+# Sincronización de caja con velocidad real
+# =========================
+
+GEAR_SYNC_COMMAND_THRESHOLD = 0.05

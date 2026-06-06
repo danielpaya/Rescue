@@ -8,6 +8,7 @@ class ControllerState:
     joystick_x: float
     joystick_y: float
     r2_value: float
+    l2_value: float
 
     l1_pressed: int
     l2_pressed: int
@@ -35,6 +36,14 @@ class ControllerMapper:
         value = (raw_value - released) / (pressed - released)
 
         return self.clamp(value, 0.0, 1.0)
+    
+    def normalize_l2_trigger(self, raw_value):
+        released = cfg.L2_RELEASED_VALUE
+        pressed = cfg.L2_PRESSED_VALUE
+
+        value = (raw_value - released) / (pressed - released)
+
+        return self.clamp(value, 0.0, 1.0)
 
     def from_joy_msg(self, msg):
         joystick_x = msg.axes[cfg.AXIS_LEFT_X] * cfg.STEER_MULTIPLIER
@@ -42,11 +51,15 @@ class ControllerMapper:
 
         r2_raw = msg.axes[cfg.AXIS_R2]
         r2_value = self.normalize_trigger(r2_raw)
+        l2_raw = msg.axes[cfg.AXIS_L2]
+        l2_value = self.normalize_trigger(l2_raw)
 
         return ControllerState(
             joystick_x=joystick_x,
             joystick_y=joystick_y,
             r2_value=r2_value,
+            l2_value=l2_value,
+
 
             l1_pressed=msg.buttons[cfg.BUTTON_L1],
             l2_pressed=msg.buttons[cfg.BUTTON_L2_FULL],

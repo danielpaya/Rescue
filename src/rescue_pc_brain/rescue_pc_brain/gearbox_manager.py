@@ -1,4 +1,4 @@
-import time
+import math
 
 from rescue_pc_brain import control_config as cfg
 
@@ -11,8 +11,6 @@ class GearboxManager:
         self.last_triangle_state = 0
         self.last_circle_state = 0
         self.last_x_state = 0
-
-        self.low_speed_since = None
 
     def get_gear_limit(self):
         return cfg.GEAR_LIMITS[self.current_gear]
@@ -42,24 +40,29 @@ class GearboxManager:
 
     def handle_manual_buttons(self, controller_state, real_speed_abs):
         """
-        L2 + Triángulo = subir caja
-        L2 + Círculo   = bajar caja
-        L2 + X         = cambiar FORWARD/REVERSE, solo si velocidad real es cero
+        L1 + Triángulo = subir caja manualmente
+        L1 + Círculo   = bajar caja manualmente
+        L1 + X         = cambiar FORWARD/REVERSE solo si la velocidad real está en cero
+
+        L2 queda libre para freno progresivo.
         """
 
-        l2_active = controller_state.l2_pressed == 1
+        l1_active = controller_state.l1_pressed == 1
 
         triangle_pressed = controller_state.triangle_pressed
         circle_pressed = controller_state.circle_pressed
         x_pressed = controller_state.x_pressed
 
-        if l2_active:
+        if l1_active:
+            # Subida manual de caja
             if triangle_pressed == 1 and self.last_triangle_state == 0:
                 self.shift_up()
 
+            # Bajada manual de caja
             if circle_pressed == 1 and self.last_circle_state == 0:
                 self.shift_down()
 
+            # Cambio FORWARD / REVERSE
             if x_pressed == 1 and self.last_x_state == 0:
                 if self.can_toggle_direction(real_speed_abs):
                     self.toggle_direction()
@@ -68,41 +71,95 @@ class GearboxManager:
         self.last_circle_state = circle_pressed
         self.last_x_state = x_pressed
 
-    def handle_auto_downshift(self, real_speed_abs):
+    def get_command_intensity(self, controller_state):
         """
-        Descenso automático por velocidad real.
+        Calcula si el operador está pidiendo movimiento.
 
-        Si la velocidad real cae por debajo del umbral durante T segundos,
-        baja una caja automáticamente.
-
-        Si la velocidad real vuelve a subir, se cancela el conteo.
+        Usa:
+            magnitud del joystick * R2
         """
 
-        now = time.monotonic()
+        joystick_x = controller_state.joystick_x
+        joystick_y = controller_state.joystick_y
 
-        if real_speed_abs > cfg.AUTO_DOWNSHIFT_REAL_SPEED_THRESHOLD:
-            self.low_speed_since = None
+        joystick_magnitude = math.sqrt(
+            joystick_x ** 2 +
+            joystick_y ** 2
+        )
+
+        if joystick_magnitude > 1.0:
+            joystick_magnitude = 1.0
+
+        return joystick_magnitude * controller_state.r2_value
+
+    def gear_from_real_speed(self, real_speed_abs):
+        """
+        Convierte velocidad real normalizada en caja.
+
+        Caja 1: 0.00 - 0.20
+        Caja 2: 0.20 - 0.40
+        Caja 3: 0.40 - 0.60
+        Caja 4: 0.60 - 0.80
+        Caja 5: 0.80 - 1.00
+        """
+
+        if real_speed_abs >= 0.80:
+            return 5
+
+        if real_speed_abs >= 0.60:
+            return 4
+
+        if real_speed_abs >= 0.40:
+            return 3
+
+        if real_speed_abs >= 0.20:
+            return 2
+
+        return 1
+
+    def sync_gear_with_real_speed(self, controller_state, real_speed_abs):
+        """
+        Baja automáticamente la caja según la velocidad real.
+
+        Reglas:
+        - La caja puede bajar sola.
+        - La caja NO puede subir sola.
+        - La caja también puede bajar manualmente con L1 + Círculo.
+        - La caja sube únicamente con L1 + Triángulo.
+        """
+
+        l1_active = controller_state.l1_pressed == 1
+        circle_pressed = controller_state.circle_pressed == 1
+
+        # Círculo solo = freno normal.
+        # L1 + Círculo = bajar caja manualmente.
+        brake_active = circle_pressed and not l1_active
+
+        command_intensity = self.get_command_intensity(controller_state)
+
+        operator_requesting_motion = (
+            command_intensity > cfg.GEAR_SYNC_COMMAND_THRESHOLD
+        )
+
+        # Si el operador está acelerando y no está frenando,
+        # no sincronizamos hacia abajo.
+        # Esto evita que al intentar acelerar se baje la caja sola.
+        if operator_requesting_motion and not brake_active:
             return
 
-        if self.current_gear <= cfg.MIN_GEAR:
-            self.low_speed_since = None
-            return
+        real_gear = self.gear_from_real_speed(real_speed_abs)
 
-        if self.low_speed_since is None:
-            self.low_speed_since = now
-            return
-
-        elapsed = now - self.low_speed_since
-
-        if elapsed >= cfg.AUTO_DOWNSHIFT_DELAY_SECONDS:
-            self.shift_down()
-            self.low_speed_since = now
+        # Solo baja automáticamente.
+        # Nunca sube automáticamente.
+        if real_gear < self.current_gear:
+            self.current_gear = real_gear
 
     def update(self, controller_state, real_speed_abs):
         """
-        Actualiza cajas y dirección.
-
-        real_speed_abs viene desde la Raspberry por /real_speed_abs.
+        Actualiza:
+        - Cambios manuales
+        - FORWARD / REVERSE
+        - Bajada automática según velocidad real
         """
 
         self.handle_manual_buttons(
@@ -110,4 +167,7 @@ class GearboxManager:
             real_speed_abs
         )
 
-        self.handle_auto_downshift(real_speed_abs)
+        self.sync_gear_with_real_speed(
+            controller_state,
+            real_speed_abs
+        )

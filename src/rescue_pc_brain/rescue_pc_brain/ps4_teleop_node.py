@@ -37,6 +37,7 @@ class PS4TeleopNode(Node):
         self.last_linear_x = 0.0
         self.last_angular_z = 0.0
         self.last_status_text = 'BLOQUEADO POR SHARE'
+        self.last_brake_intensity = 0.0
 
         # Contador para no saturar terminal.
         self.log_counter = 0
@@ -71,7 +72,12 @@ class PS4TeleopNode(Node):
             10
         )
 
-        # Publica estado periódicamente aunque no llegue /joy.
+        self.brake_intensity_publisher = self.create_publisher(
+            Float32,
+            '/brake_intensity',
+            10
+        )
+
         self.status_timer = self.create_timer(
             0.2,
             self.publish_periodic_status
@@ -81,6 +87,7 @@ class PS4TeleopNode(Node):
         self.get_logger().info('Nueva lógica: cajas + R2 + reversa segura.')
         self.get_logger().info('Share habilita/deshabilita movimiento.')
         self.get_logger().info('Publicando /drive_status para interfaz gráfica.')
+        self.get_logger().info('Publicando /brake_intensity para freno progresivo.')
 
     # =========================
     # Callback de velocidad real
@@ -90,16 +97,22 @@ class PS4TeleopNode(Node):
         self.real_speed_abs = msg.data
 
     # =========================
-    # Publicación de parada
+    # Publicaciones auxiliares
     # =========================
 
     def publish_stop(self):
         cmd = Twist()
-
         cmd.linear.x = 0.0
         cmd.angular.z = 0.0
-
         self.cmd_vel_publisher.publish(cmd)
+
+    def publish_brake_intensity(self, value):
+        self.last_brake_intensity = float(value)
+
+        msg = Float32()
+        msg.data = float(value)
+
+        self.brake_intensity_publisher.publish(msg)
 
     # =========================
     # Toggle con botón Share
@@ -121,6 +134,7 @@ class PS4TeleopNode(Node):
                 self.last_linear_x = 0.0
                 self.last_angular_z = 0.0
                 self.publish_stop()
+                self.publish_brake_intensity(0.0)
                 self.get_logger().info('Movimiento DESHABILITADO con Share.')
 
         self.last_share_state = share_pressed
@@ -143,6 +157,7 @@ class PS4TeleopNode(Node):
             'direction': self.gearbox_manager.direction,
             'target_speed': float(target_speed),
             'real_speed_abs': float(self.real_speed_abs),
+            'brake_intensity': float(self.last_brake_intensity),
             'linear_x': float(linear_x),
             'angular_z': float(angular_z),
             'movement_enabled': bool(movement_enabled),
@@ -161,6 +176,12 @@ class PS4TeleopNode(Node):
                 'circle_pressed': int(controller_state.circle_pressed),
                 'triangle_pressed': int(controller_state.triangle_pressed),
             })
+
+            if hasattr(controller_state, 'l2_value'):
+                payload['l2_value'] = float(controller_state.l2_value)
+            else:
+                payload['l2_value'] = 0.0
+
         else:
             payload.update({
                 'r2': 0.0,
@@ -172,6 +193,7 @@ class PS4TeleopNode(Node):
                 'x_pressed': 0,
                 'circle_pressed': 0,
                 'triangle_pressed': 0,
+                'l2_value': 0.0,
             })
 
         msg = String()
@@ -208,35 +230,52 @@ class PS4TeleopNode(Node):
             self.real_speed_abs
         )
 
-        l2_pressed = controller_state.l2_pressed == 1
+        l1_pressed = controller_state.l1_pressed == 1
         circle_pressed = controller_state.circle_pressed == 1
 
-        # Círculo solo = parada y deshabilita movimiento.
-        # L2 + Círculo = bajar caja, no parada.
-        if circle_pressed and not l2_pressed:
-            self.movement_enabled = False
+        # =========================
+        # Freno
+        # =========================
+        # Círculo solo = freno normal.
+        # L2 + Círculo = freno fuerte/progresivo.
+        # L1 + Círculo = bajar caja, no frenar.
+        if circle_pressed and not l1_pressed:
+            if hasattr(controller_state, 'l2_value'):
+                brake_intensity = controller_state.l2_value
+            else:
+                brake_intensity = 0.0
+
             self.publish_stop()
+            self.publish_brake_intensity(brake_intensity)
 
             self.last_target_speed = 0.0
             self.last_linear_x = 0.0
             self.last_angular_z = 0.0
-            self.last_status_text = 'PARADA CON CIRCULO'
+
+            if brake_intensity > 0.10:
+                self.last_status_text = f'FRENANDO FUERTE L2={brake_intensity:.2f}'
+            else:
+                self.last_status_text = 'FRENANDO NORMAL'
 
             self.publish_drive_status(
                 controller_state=controller_state,
                 target_speed=self.last_target_speed,
                 linear_x=self.last_linear_x,
                 angular_z=self.last_angular_z,
-                movement_enabled=False,
+                movement_enabled=self.movement_enabled,
                 status_text=self.last_status_text
             )
 
-            self.get_logger().info('Parada solicitada con círculo. Movimiento deshabilitado.')
+            self.get_logger().info(self.last_status_text)
             return
 
-        # Si Share no ha habilitado movimiento, publicar stop.
+        # =========================
+        # Bloqueo por Share
+        # =========================
+
         if not self.movement_enabled:
             self.publish_stop()
+            self.publish_brake_intensity(0.0)
 
             self.last_target_speed = 0.0
             self.last_linear_x = 0.0
@@ -266,7 +305,10 @@ class PS4TeleopNode(Node):
 
             return
 
-        # Si está habilitado, construimos /cmd_vel.
+        # =========================
+        # Movimiento normal
+        # =========================
+
         drive_command = self.drive_command_builder.build(
             controller_state,
             self.gearbox_manager
@@ -277,6 +319,7 @@ class PS4TeleopNode(Node):
         cmd.angular.z = drive_command.angular_z
 
         self.cmd_vel_publisher.publish(cmd)
+        self.publish_brake_intensity(0.0)
 
         self.last_target_speed = drive_command.target_speed
         self.last_linear_x = cmd.linear.x
@@ -304,6 +347,7 @@ class PS4TeleopNode(Node):
                 f'r2={controller_state.r2_value:.3f}, '
                 f'joy_x={controller_state.joystick_x:.3f}, '
                 f'joy_y={controller_state.joystick_y:.3f}, '
+                f'brake={self.last_brake_intensity:.3f}, '
                 f'target_speed={drive_command.target_speed:.3f}, '
                 f'linear.x={cmd.linear.x:.3f}, '
                 f'angular.z={cmd.angular.z:.3f}'
