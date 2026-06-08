@@ -101,3 +101,17 @@ MAX_ANGULAR_SPEED = 1.0
 # =========================
 
 GEAR_SYNC_COMMAND_THRESHOLD = 0.05
+
+# =========================
+# Seguridad de giro según velocidad real
+# =========================
+
+# Si la velocidad real está por debajo de este valor,
+# se permite giro sobre el propio eje.
+PIVOT_ALLOWED_REAL_SPEED = 0.15
+
+# A máxima velocidad, aunque el joystick X esté a tope,
+# solo se permite este porcentaje de giro.
+#
+# 0.35 = giro máximo permitido del 35% cuando el robot va rápido.
+MIN_STEER_AT_MAX_SPEED = 0.35

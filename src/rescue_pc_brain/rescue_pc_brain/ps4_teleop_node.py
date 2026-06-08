@@ -244,9 +244,9 @@ class PS4TeleopNode(Node):
                 brake_intensity = controller_state.l2_value
             else:
                 brake_intensity = 0.0
-
-            self.publish_stop()
+            
             self.publish_brake_intensity(brake_intensity)
+            self.publish_stop()
 
             self.last_target_speed = 0.0
             self.last_linear_x = 0.0
@@ -311,7 +311,8 @@ class PS4TeleopNode(Node):
 
         drive_command = self.drive_command_builder.build(
             controller_state,
-            self.gearbox_manager
+            self.gearbox_manager,
+            self.real_speed_abs
         )
 
         cmd = Twist()
@@ -349,6 +350,9 @@ class PS4TeleopNode(Node):
                 f'joy_y={controller_state.joystick_y:.3f}, '
                 f'brake={self.last_brake_intensity:.3f}, '
                 f'target_speed={drive_command.target_speed:.3f}, '
+                f'raw_steer={drive_command.raw_steer:.3f}, '
+                f'applied_steer={drive_command.applied_steer:.3f}, '
+                f'max_steer={drive_command.max_steer_allowed:.3f}, '
                 f'linear.x={cmd.linear.x:.3f}, '
                 f'angular.z={cmd.angular.z:.3f}'
             )
