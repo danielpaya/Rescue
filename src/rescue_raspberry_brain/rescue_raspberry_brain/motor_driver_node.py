@@ -92,7 +92,9 @@ class MotorDriverNode(Node):
         self.straight_ramp_factor = 5.00
         self.curve_ramp_factor = 0.55
         self.pivot_ramp_factor = 0.75
-        self.stop_ramp_factor = 0.80
+        self.brake_intensity = 0.0
+        self.normal_stop_ramp_factor = 0.80
+        self.hard_stop_ramp_factor = 0.25
 
         self.last_motion_state = 'STOP'
         self.log_counter = 0
@@ -188,6 +190,13 @@ class MotorDriverNode(Node):
             Twist,
             '/cmd_vel',
             self.cmd_vel_callback,
+            10
+        )
+
+        self.brake_intensity_subscription = self.create_subscription(
+            Float32,
+            '/brake_intensity',
+            self.brake_intensity_callback,
             10
         )
 
@@ -383,9 +392,18 @@ class MotorDriverNode(Node):
             return self.curve_ramp_factor
 
         if state == 'STOP':
-            return self.stop_ramp_factor
+            return self.get_stop_ramp_factor()
 
         return self.straight_ramp_factor
+    
+    def get_stop_ramp_factor(self):
+        brake = self.clamp(self.brake_intensity, 0.0, 1.0)
+
+        factor = self.normal_stop_ramp_factor - (
+            self.normal_stop_ramp_factor - self.hard_stop_ramp_factor
+        ) * brake
+
+        return factor
 
     def get_adaptive_ramp_time(self, new_left_target, new_right_target, state):
         """
@@ -596,6 +614,62 @@ class MotorDriverNode(Node):
             state
         )
 
+    def brake_intensity_callback(self, msg):
+        old_brake_intensity = self.brake_intensity
+
+        self.brake_intensity = self.clamp(msg.data, 0.0, 1.0)
+
+        brake_changed = abs(
+            self.brake_intensity - old_brake_intensity
+        ) > 0.02
+
+        if brake_changed:
+            self.restart_stop_ramp_with_current_brake()
+    
+    def restart_stop_ramp_with_current_brake(self):
+        """
+        Recalcula la rampa de frenado usando el brake_intensity actual.
+
+        Esto es necesario porque /cmd_vel y /brake_intensity llegan por tópicos
+        separados. Si /cmd_vel=0 llegó primero, la rampa pudo haberse calculado
+        con brake_intensity anterior.
+        """
+
+        targets_are_zero = (
+            self.is_zero(self.left_target) and
+            self.is_zero(self.right_target)
+        )
+
+        outputs_are_moving = (
+            not self.is_zero(self.left_output) or
+            not self.is_zero(self.right_output)
+        )
+
+        if not targets_are_zero:
+            return
+
+        if not outputs_are_moving:
+            return
+
+        now = self.now_seconds()
+
+        self.left_start_output = self.left_output
+        self.right_start_output = self.right_output
+
+        self.left_target = 0.0
+        self.right_target = 0.0
+
+        self.last_motion_state = 'STOP'
+
+        self.current_ramp_time = self.get_adaptive_ramp_time(
+            0.0,
+            0.0,
+            'STOP'
+        )
+
+        self.profile_start_time = now
+   
+   
     # =========================
     # Timer del perfil S
     # =========================
@@ -685,4 +759,4 @@ def main(args=None):
     finally:
         node.shutdown_motors()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.shutdown()git
